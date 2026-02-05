@@ -1,47 +1,35 @@
-from lambda_function import summarize_with_ai, get_transcript_text
-import os
 from dotenv import load_dotenv
+from lambda_function import download_audio, summarize_with_gemini_audio, clean_html_output
 
 # Load your API Key
 load_dotenv()
 
-# --- INPUT YOUR VIDEO URL HERE ---
-VIDEO_URL = "https://youtu.be/ZXpokqw2waY?si=Moshpy11MNArsnZs" 
-# Example: https://www.youtube.com/watch?v=dQw4w9WgXcQ (The ID is dQw4w9WgXcQ)
-
-def extract_video_id(url):
-    if "v=" in url:
-        return url.split("v=")[1].split("&")[0]
-    elif "youtu.be" in url:
-        return url.split("/")[-1].split("?")[0]
-    return url # Assume it's already an ID
+# --- INPUT YOUR PODCAST MP3 URL HERE ---
+EPISODE_AUDIO_URL = "https://anchor.fm/s/15ae74cc/podcast/play/114542643/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F2026-0-26%2Ff2e5812b-3ead-2214-4386-fea98839de96.mp3"
+EPISODE_TITLE = "Test Episode Title"
+LOCAL_AUDIO_FILENAME = "audio.mp3"
 
 if __name__ == "__main__":
-    video_id = extract_video_id(VIDEO_URL)
-    print(f"--- TESTING VIDEO ID: {video_id} ---")
-    
-    # 1. Get Transcript
-    print("1. Fetching transcript...")
-    transcript = get_transcript_text(video_id)
-    
-    if transcript:
-        print(f"   Success! Transcript length: {len(transcript)} characters.")
-        
-        # Save transcript to file
-        with open('transcript.txt', 'w', encoding='utf-8') as f:
-            f.write(transcript)
-        
+    print("--- TESTING PODCAST AUDIO ---")
+
+    # 1. Download Audio
+    print(f"1. Downloading audio for: {EPISODE_TITLE}...")
+    audio_path = download_audio(EPISODE_AUDIO_URL, filename=LOCAL_AUDIO_FILENAME)
+
+    if audio_path:
+        print(f"   Success! Audio saved at: {audio_path}")
+
         # 2. Summarize
-        print("2. Sending to AI...")
-        summary = summarize_with_ai(transcript, "Test Video Title")
-        
+        print(f"2. Sending to AI for: {EPISODE_TITLE}...")
+        summary = summarize_with_gemini_audio(audio_path, EPISODE_TITLE)
+
         if summary:
             print("Summary Generation Complete")
-            
+
             # Save summary to file
             with open('summary.txt', 'w', encoding='utf-8') as f:
-                f.write(summary)
+                f.write(clean_html_output(summary))
         else:
             print("❌ Error: AI summarization failed.")
     else:
-        print("❌ Error: Could not get transcript. Video might not have captions enabled.")
+        print("❌ Error: Could not download audio. Check the MP3 URL.")

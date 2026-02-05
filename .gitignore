@@ -1,6 +1,7 @@
 .env
 transcript.txt
 summary.txt
+audio.mp3
 .venv/
 venv/
 __pycache__/
@@ -13,3 +14,5 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 .vscode/
+package
+deployment.zip
