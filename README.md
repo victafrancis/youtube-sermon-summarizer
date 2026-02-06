@@ -1,6 +1,9 @@
-# Sermon Summarizer (CCF Podcast)
+# Weekly Automated Sermon Summarizer (CCF Podcast)
 
 AWS Lambda that checks the **latest CCF sermon podcast** entries, downloads the audio, summarizes them with Gemini AI (gemini-2.5-flash) via the Google GenAI Python SDK, and emails the summaries to configured recipients. A DynamoDB table is used to prevent re-processing the same episode.
+
+## Why I Built This
+I’ve been quite busy lately and haven’t always been able to catch the weekly CCF sermons live. I still want to stay aware of the message, so I built an automated solution that summarizes the sermon and emails it directly to me and my wife. This lets us stay informed and learn from each week’s teaching without missing the core message.
 
 ## What It Does
 - Polls the CCF podcast RSS feed for the latest episodes (via EventBridge).
@@ -8,6 +11,13 @@ AWS Lambda that checks the **latest CCF sermon podcast** entries, downloads the 
 - Uploads the sermon audio to Gemini and summarizes it directly from the audio file.
 - Emails each sermon summary via AWS SES (one email per sermon).
 - Stores the episode ID in DynamoDB so it only runs once per episode.
+
+## Sample Output
+Processed MP3:
+https://anchor.fm/s/15ae74cc/podcast/play/114855654/https%3A%2F%2Fd3ctxlq1ktw2nl.cloudfront.net%2Fstaging%2F2026-1-1%2F1b887726-e4af-c122-882f-61bd429eb1a5.mp3
+
+Screenshot of the generated summary email:
+![Sample sermon summary email](sample_summary.png)
 
 ## Architecture (High Level)
 1. **AWS EventBridge** → triggers the Lambda on Sundays (can run multiple times)
