@@ -287,12 +287,19 @@ def lambda_handler(event, context):
 
         # 6. Send Email
         email_body = (
-            "<div style=\"font-size: 18px; line-height: 1.6; font-family: Arial, sans-serif;\">"
-            f"<h2 style=\"font-size: 26px; margin: 0 0 12px;\">{episode['title']}</h2>"
-            f"<p style=\"margin: 0 0 16px;\"><a href='{episode['link']}' style=\"font-size: 18px;\">Listen to Episode</a></p>"
+            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\""
+            " style=\"border-collapse: collapse; font-family: Arial, sans-serif;\">"
+            "<tr>"
+            "<td style=\"padding: 0; font-size: 15px !important; line-height: 1.6;\">"
+            f"<h2 style=\"margin: 0 0 12px; font-size: 20px !important; line-height: 1.3;\">{episode['title']}</h2>"
+            f"<p style=\"margin: 0 0 16px; font-size: 15px !important;\">"
+            f"<a href='{episode['link']}' style=\"font-size: 15px !important;\">Listen to Episode</a>"
+            "</p>"
             "<hr style=\"margin: 16px 0;\">"
-            f"{summary_html}"
-            "</div>"
+            f"<div style=\"font-size: 15px !important; line-height: 1.6;\">{summary_html}</div>"
+            "</td>"
+            "</tr>"
+            "</table>"
         )
         print(f"Sending email via SES to: {recipients} | From: {SENDER_EMAIL}")
         try:

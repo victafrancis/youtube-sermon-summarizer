@@ -28,7 +28,7 @@ The Lambda can be triggered multiple times on Sunday (e.g., 3–4 times) based o
 If only one sermon is uploaded early, the first run sends that one. Later runs will pick up the second sermon once it appears, but already-sent sermons will not be reprocessed.
 
 ## Prerequisites
-- Python 3.11+
+- Python 3.13+
 - AWS account with:
   - **Lambda**
   - **DynamoDB** table
@@ -54,7 +54,7 @@ For multiple recipients, use a comma-separated list:
 RECIPIENT_EMAILS=person1@example.com,person2@example.com,person3@example.com
 ```
 
-To test a specific date (e.g., last Sunday), add:
+To test a specific date on Lambda Test Function and not local test (e.g., last Sunday), add:
 ```bash
 FORCE_DATE=2026-02-01
 ```
@@ -91,16 +91,9 @@ python test_manual.py
 
 Edit the episode URL or RSS entry inside `test_manual.py` to test a different sermon.
 
-## Deployment Notes
-1. Deploy `lambda_function.py` and dependencies to AWS Lambda.
-2. Configure Lambda environment variables listed above.
-3. Ensure the Lambda role has permissions for:
-   - `dynamodb:GetItem`
-   - `dynamodb:PutItem`
-   - `ses:SendEmail`
-4. In SES, verify the sender email (and recipient if in the SES sandbox).
+### Packaging and Deployment (bash/Linux)
+Upload `deplyment.zip` to Lambda or use AWS CLI if configured
 
-### Packaging (bash/Linux)
 ```bash
 # from repo root
 rm -rf package deployment.zip
@@ -115,6 +108,13 @@ Use this if you build on Windows but deploy to AWS Lambda (Linux). These command
 
 **Step 0 — Start Docker Desktop**
 - Open Docker Desktop and wait until it shows **Running**.
+
+**Optional (Git Bash) — One-step build script**
+If you use Git Bash, run:
+```bash
+bash build_package.sh
+```
+This script deletes `package/` and `deployment.zip`, rebuilds the package, and creates a fresh zip.
 
 **Step 1 — Build (install deps + copy code)**
 
