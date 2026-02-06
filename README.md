@@ -1,11 +1,11 @@
 # Sermon Summarizer (CCF Podcast)
 
-AWS Lambda that checks the **latest CCF sermon podcast** entries, downloads the audio, summarizes them with Gemini AI (native audio), and emails the summaries to configured recipients. A DynamoDB table is used to prevent re-processing the same episode.
+AWS Lambda that checks the **latest CCF sermon podcast** entries, downloads the audio, summarizes them with Gemini AI (gemini-2.5-flash) via the Google GenAI Python SDK, and emails the summaries to configured recipients. A DynamoDB table is used to prevent re-processing the same episode.
 
 ## What It Does
 - Polls the CCF podcast RSS feed for the latest episodes (via EventBridge).
 - Downloads the sermon audio (MP3).
-- Summarizes the sermon with Gemini (native audio input).
+- Uploads the sermon audio to Gemini and summarizes it directly from the audio file.
 - Emails each sermon summary via AWS SES (one email per sermon).
 - Stores the episode ID in DynamoDB so it only runs once per episode.
 
@@ -13,7 +13,7 @@ AWS Lambda that checks the **latest CCF sermon podcast** entries, downloads the 
 1. **AWS EventBridge** → triggers the Lambda on Sundays (can run multiple times)
 2. **Podcast RSS** → latest episode metadata + audio URL
 3. **Sermon Filter** → match Sunday sermons by title date + publish date
-4. **Gemini Native Audio** → transcript + summary generation in one pass
+4. **Gemini (audio upload)** → generate summary from the attached audio file
 5. **AWS SES** → email delivery (one per sermon)
 6. **AWS DynamoDB** → deduplication of processed episodes
 
@@ -66,6 +66,11 @@ Remove `FORCE_DATE` to return to normal behavior (uses today's date in America/N
 - In SES sandbox mode, all recipient emails must be verified.
 - On Windows/local dev, install `tzdata` (included in requirements.txt) so `ZoneInfo("America/New_York")` works.
 
+### Gemini Audio Processing Notes
+- The Lambda uses the **Google GenAI Python SDK** (`google.genai`).
+- It uploads the MP3 with `client.files.upload(...)` and passes the returned file handle into `client.models.generate_content(...)`.
+- After the response is generated, the uploaded audio file is deleted via `client.files.delete(...)`.
+
 ## Install Dependencies
 ```bash
 python -m venv .venv
@@ -92,7 +97,7 @@ python test_manual.py
 Edit the episode URL or RSS entry inside `test_manual.py` to test a different sermon.
 
 ### Packaging and Deployment (bash/Linux)
-Upload `deplyment.zip` to Lambda or use AWS CLI if configured
+Upload `deployment.zip` to Lambda or use AWS CLI if configured
 
 ```bash
 # from repo root
@@ -156,7 +161,7 @@ aws lambda update-function-code \
 ```
 
 ## Scheduling
-This Lambda is intended to be triggered on a schedule using **Amazon EventBridge**. For Sunday sermons, you can run the rule multiple times (e.g., 3–4 triggers on Sunday EST) to catch late uploads while relying on DynamoDB dedupe.
+This Lambda is intended to be triggered on a schedule using **Amazon EventBridge**. It is currently scheduled to run on Sundays (10am, 3pm, 9pm) and Mondays (10am, 3pm) to account for delayed uploads.
 
 ## Files of Interest
 - `lambda_function.py` — Lambda entry point and main logic
@@ -168,6 +173,3 @@ This Lambda is intended to be triggered on a schedule using **Amazon EventBridge
 - **No audio found**: ensure the podcast RSS entry has an `enclosure` with an MP3 URL.
 - **SES errors**: ensure sender is verified and the Lambda role allows `ses:SendEmail`.
 - **Already processed**: the episode ID is stored in DynamoDB and won’t be reprocessed.
-
----
-If you want the README expanded with a sample summary or diagrams, just let me know.
