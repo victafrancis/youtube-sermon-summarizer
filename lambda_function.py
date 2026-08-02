@@ -8,6 +8,9 @@ import requests
 from google import genai
 import re
 
+import tts
+import podcast_feed
+
 # Load local secrets only if running locally
 try:
     from dotenv import load_dotenv
@@ -26,6 +29,9 @@ SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
 RECIPIENT_EMAIL = os.environ.get('RECIPIENT_EMAIL')
 RECIPIENT_EMAILS = os.environ.get('RECIPIENT_EMAILS')
 DYNAMODB_TABLE = os.environ.get('DYNAMO_TABLE', 'CCFProcessedAudio')
+# Attach the narration to the email as well as linking it. Handy if you have no
+# S3 bucket, but the file inflates the message by about a third in transit.
+ATTACH_AUDIO_TO_EMAIL = os.environ.get('ATTACH_AUDIO_TO_EMAIL') == 'True'
 
 # --- MOCKING AWS (The "Local" Magic) ---
 if LOCAL_TEST_MODE:
@@ -35,13 +41,15 @@ if LOCAL_TEST_MODE:
     class MockTable:
         def __init__(self):
             self.items = {}
-        def get_item(self, Key): 
+        def get_item(self, Key):
             item = self.items.get(Key['episode_id'])
             return {'Item': item} if item else {}
-        def put_item(self, Item): 
+        def put_item(self, Item):
             self.items[Item['episode_id']] = Item
             print(f"[Mock DB] Saved Episode ID: {Item['episode_id']}")
-    
+        def scan(self, **kwargs):
+            return {'Items': list(self.items.values())}
+
     # Fake Email Service
     class MockSES:
         def send_email(self, Source, Destination, Message):
@@ -50,9 +58,28 @@ if LOCAL_TEST_MODE:
             print(f"Subject: {Message['Subject']['Data']}")
             print(f"Body Preview: {Message['Body']['Html']['Data'][:500]}...")
             print("-------------------------\n")
+        def send_raw_email(self, Source, Destinations, RawMessage):
+            print(f"\n--- [Mock Email SENT with attachment] ---")
+            print(f"To: {Destinations}")
+            print(f"Raw size: {len(RawMessage['Data']) / (1024 * 1024):.2f} MB")
+            print("-----------------------------------------\n")
+
+    # Fake S3 - writes where the real code would upload so you can play the
+    # MP3 and inspect feed.xml locally.
+    class MockS3:
+        def put_object(self, Bucket, Key, Body, **kwargs):
+            path = os.path.join('local_output', Key)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as f:
+                f.write(Body if isinstance(Body, bytes) else Body.encode('utf-8'))
+            print(f"[Mock S3] Wrote {path} ({len(Body) / 1024:.0f} KB)")
 
     table = MockTable()
     ses = MockSES()
+    podcast_feed._s3_client = lambda: MockS3()
+    # Give the feed a bucket name so the local run exercises the real code path.
+    if not podcast_feed.AUDIO_BUCKET:
+        podcast_feed.AUDIO_BUCKET = 'local-test-bucket'
 else:
     # Real AWS Resources (Runs only when uploaded to Lambda)
     dynamodb = boto3.resource('dynamodb')
@@ -224,6 +251,111 @@ def clean_html_output(summary_html):
 
     return summary_html
 
+def format_duration(seconds):
+    minutes, secs = divmod(int(seconds or 0), 60)
+    return f"{minutes} min {secs:02d} sec"
+
+
+def build_audio_section(audio_result, audio_url, feed_link):
+    """The 'listen instead of read' block that sits above the summary."""
+    if not audio_result:
+        return ""
+
+    if audio_url:
+        headline = (
+            f"<a href=\"{audio_url}\" style=\"font-size: 15px !important; font-weight: bold;\">"
+            f"&#127911; Listen to this summary</a>"
+            f" <span style=\"color: #555;\">({format_duration(audio_result.duration_seconds)})</span>"
+        )
+    else:
+        headline = (
+            "<span style=\"font-size: 15px !important; font-weight: bold;\">"
+            f"&#127911; Audio summary attached ({format_duration(audio_result.duration_seconds)})</span>"
+        )
+
+    subscribe = ""
+    if feed_link:
+        subscribe = (
+            "<div style=\"margin: 8px 0 0; font-size: 13px !important; color: #555;\">"
+            "Listening in the car? Subscribe once in your podcast app and every "
+            f"summary shows up automatically:<br><a href=\"{feed_link}\">{feed_link}</a>"
+            "</div>"
+        )
+
+    return (
+        "<div style=\"background: #f4f7fb; border-radius: 8px; padding: 14px 16px;"
+        " margin: 0 0 18px;\">"
+        f"{headline}{subscribe}"
+        "</div>"
+    )
+
+
+def build_email_body(episode, summary_html, audio_section):
+    return (
+        "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\""
+        " style=\"border-collapse: collapse; font-family: Arial, sans-serif;\">"
+        "<tr>"
+        "<td style=\"padding: 0; font-size: 15px !important; line-height: 1.6;\">"
+        f"<h2 style=\"margin: 0 0 12px; font-size: 20px !important; line-height: 1.3;\">{episode['title']}</h2>"
+        f"{audio_section}"
+        f"<p style=\"margin: 0 0 16px; font-size: 15px !important;\">"
+        f"<a href='{episode['link']}' style=\"font-size: 15px !important;\">Listen to Episode</a>"
+        "</p>"
+        "<hr style=\"margin: 16px 0;\">"
+        f"<div style=\"font-size: 15px !important; line-height: 1.6;\">{summary_html}</div>"
+        "</td>"
+        "</tr>"
+        "</table>"
+    )
+
+
+def send_summary_email(recipients, subject, body_html, audio_result=None, filename=None):
+    """Sends the summary, attaching the narration when asked to."""
+    if not (audio_result and ATTACH_AUDIO_TO_EMAIL):
+        response = ses.send_email(
+            Source=SENDER_EMAIL,
+            Destination={'ToAddresses': recipients},
+            Message={
+                'Subject': {'Data': subject},
+                'Body': {'Html': {'Data': body_html}}
+            }
+        )
+        return response.get('MessageId') if isinstance(response, dict) else None
+
+    # SES only accepts attachments through the raw (MIME) send path.
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.audio import MIMEAudio
+
+    message = MIMEMultipart('mixed')
+    message['Subject'] = subject
+    message['From'] = SENDER_EMAIL
+    message['To'] = ', '.join(recipients)
+
+    body_part = MIMEMultipart('alternative')
+    body_part.attach(MIMEText(body_html, 'html', 'utf-8'))
+    message.attach(body_part)
+
+    subtype = 'mpeg' if audio_result.extension == 'mp3' else audio_result.extension
+    attachment = MIMEAudio(audio_result.data, _subtype=subtype)
+    attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+    message.attach(attachment)
+
+    response = ses.send_raw_email(
+        Source=SENDER_EMAIL,
+        Destinations=recipients,
+        RawMessage={'Data': message.as_bytes()}
+    )
+    return response.get('MessageId') if isinstance(response, dict) else None
+
+
+def safe_filename(title, extension):
+    """A tidy, filesystem-safe attachment name derived from the episode title."""
+    cleaned = re.sub(r"[^\w\s-]", "", title or "sermon-summary").strip()
+    cleaned = re.sub(r"[-\s]+", "-", cleaned) or "sermon-summary"
+    return f"{cleaned[:60]}.{extension}"
+
+
 # --- MAIN HANDLER (The Controller) ---
 def lambda_handler(event, context):
     print("Checking for new sermons...")
@@ -285,47 +417,73 @@ def lambda_handler(event, context):
 
         summary_html = clean_html_output(summary_html)
 
-        # 6. Send Email
-        email_body = (
-            "<table role=\"presentation\" width=\"100%\" cellspacing=\"0\" cellpadding=\"0\""
-            " style=\"border-collapse: collapse; font-family: Arial, sans-serif;\">"
-            "<tr>"
-            "<td style=\"padding: 0; font-size: 15px !important; line-height: 1.6;\">"
-            f"<h2 style=\"margin: 0 0 12px; font-size: 20px !important; line-height: 1.3;\">{episode['title']}</h2>"
-            f"<p style=\"margin: 0 0 16px; font-size: 15px !important;\">"
-            f"<a href='{episode['link']}' style=\"font-size: 15px !important;\">Listen to Episode</a>"
-            "</p>"
-            "<hr style=\"margin: 16px 0;\">"
-            f"<div style=\"font-size: 15px !important; line-height: 1.6;\">{summary_html}</div>"
-            "</td>"
-            "</tr>"
-            "</table>"
+        # 6. Narrate the summary so it can be listened to instead of read.
+        # A failure here must not cost us the text summary, so it degrades
+        # to the original email-only behaviour.
+        audio_result = None
+        audio_url = None
+        audio_filename = None
+        try:
+            audio_result = tts.synthesize(summary_html, episode['title'])
+        except Exception as e:
+            print(f"Narration failed unexpectedly: {e}")
+
+        if audio_result:
+            audio_filename = safe_filename(episode['title'], audio_result.extension)
+            key = podcast_feed.audio_key(
+                episode['id'], target_date.isoformat(), audio_result.extension
+            )
+            audio_url = podcast_feed.upload_audio(audio_result, key)
+
+        # 7. Send Email
+        feed_link = podcast_feed.feed_url() if podcast_feed.is_configured() else None
+        email_body = build_email_body(
+            episode,
+            summary_html,
+            build_audio_section(audio_result, audio_url, feed_link),
         )
         print(f"Sending email via SES to: {recipients} | From: {SENDER_EMAIL}")
         try:
-            response = ses.send_email(
-                Source=SENDER_EMAIL,
-                Destination={'ToAddresses': recipients},
-                Message={
-                    'Subject': {'Data': f"CCF Sunday Sermon Summary: {episode['title']}"},
-                    'Body': {'Html': {'Data': email_body}}
-                }
+            message_id = send_summary_email(
+                recipients,
+                f"CCF Sunday Sermon Summary: {episode['title']}",
+                email_body,
+                audio_result,
+                audio_filename,
             )
-            message_id = response.get('MessageId') if isinstance(response, dict) else None
-            print(f"SES send_email succeeded. MessageId: {message_id}")
+            print(f"SES send succeeded. MessageId: {message_id}")
         except Exception as e:
-            print(f"SES send_email failed: {e}")
+            print(f"SES send failed: {e}")
             raise
 
-        # 7. Save to DB
-        table.put_item(Item={
+        # 8. Save to DB (also the source of truth for the podcast feed)
+        record = {
             'episode_id': episode['id'],
             'title': episode['title'],
             'sermon_date': target_date.isoformat(),
-            'processed_at': datetime.utcnow().isoformat()
-        })
+            'processed_at': datetime.utcnow().isoformat(),
+            'episode_link': episode['link'],
+            'published_at': episode['published_at'].isoformat(),
+            'summary_html': summary_html,
+        }
+        if audio_url:
+            record.update({
+                'audio_url': audio_url,
+                'audio_bytes': len(audio_result.data),
+                'audio_duration_sec': audio_result.duration_seconds,
+                'audio_mime': audio_result.mime_type,
+                'audio_provider': audio_result.provider,
+            })
+        table.put_item(Item=record)
 
         processed_count += 1
+
+    # 9. Refresh the podcast feed so subscribed apps pick up new episodes.
+    if processed_count and podcast_feed.is_configured():
+        try:
+            podcast_feed.rebuild_feed(table)
+        except Exception as e:
+            print(f"Podcast feed rebuild failed: {e}")
 
     return {"statusCode": 200, "body": f"Processed {processed_count} sermon(s)."}
 

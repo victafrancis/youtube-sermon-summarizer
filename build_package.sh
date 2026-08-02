@@ -15,7 +15,7 @@ rm -rf "$PACKAGE_DIR" "$ZIP_PATH"
 
 echo "Rebuilding package with Docker..."
 docker run --rm -v "$ROOT_DIR":/var/task --entrypoint /bin/bash public.ecr.aws/lambda/python:3.13 \
-  -c "pip install -r requirements.txt -t package && cp lambda_function.py prompt.txt package/"
+  -c "pip install -r requirements.txt -t package && cp lambda_function.py tts.py podcast_feed.py prompt.txt package/"
 
 echo "Creating deployment.zip..."
 docker run --rm -v "$ROOT_DIR":/var/task --entrypoint /bin/bash public.ecr.aws/lambda/python:3.13 \
